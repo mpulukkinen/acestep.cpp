@@ -32,7 +32,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config libvulkan-dev glslc
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
 
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
@@ -99,8 +105,8 @@ jobs:
         run: |
           $package = "dist/acestep-windows-x64"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item "build/Release/*.exe" $package
-          Copy-Item "build/Release/*.dll" $package
+          Copy-Item "build/*.exe" $package
+          Copy-Item "build/*.dll" $package
           Compress-Archive -Path $package -DestinationPath "acestep-windows-x64.zip"
 
       - name: Upload packaged build

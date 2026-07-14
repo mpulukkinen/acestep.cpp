@@ -28,7 +28,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config libvulkan-dev glslc
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
 
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
@@ -88,7 +94,7 @@ jobs:
             "quantize", "neural-codec", "mp3-codec"
           )
           foreach ($name in $expected) {
-            if (-not (Test-Path "build/Release/$name.exe")) {
-              throw "Missing build/Release/$name.exe"
+            if (-not (Test-Path "build/$name.exe")) {
+              throw "Missing build/$name.exe"
             }
           }
