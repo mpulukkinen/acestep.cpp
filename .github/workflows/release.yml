@@ -1,60 +1,88 @@
-name: Build & Release Binaries
+name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to attach binaries to (e.g. v0.1.0)'
+        description: Existing tag to build and release (for example, v0.1.0)
         required: true
         type: string
-      skip_linux:
-        description: 'Skip Linux build'
-        required: false
-        type: boolean
-        default: false
-      skip_mac:
-        description: 'Skip macOS build'
-        required: false
-        type: boolean
-        default: false
-      skip_windows:
-        description: 'Skip Windows build'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
 
 jobs:
-  build-linux:
-    name: Build · linux-x64
+  linux:
+    name: Linux x64 (CPU + CUDA + Vulkan)
     runs-on: ubuntu-22.04
-    if: github.event_name != 'workflow_dispatch' || !inputs.skip_linux
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout
+      - name: Check out release source
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_REF }}
           submodules: recursive
 
-      - name: Install build tools
+      - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake build-essential pkg-config libopenblas-dev
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          create-symlink: true
-          key: build-linux-ubuntu-22.04
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libvulkan-dev glslc
 
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
-          log-file-suffix: 'ubuntu-22.04.txt'
+          cuda: 12.8.1
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
+          log-file-suffix: ubuntu-22.04.txt
+
+      - name: Build every Linux backend
+        run: ./buildall.sh
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/acestep-linux-x64
+          cp build/ace-lm build/ace-synth build/ace-server build/ace-understand \
+             build/quantize build/neural-codec build/mp3-codec \
+             dist/acestep-linux-x64/
+          find build -maxdepth 1 \( -type f -o -type l \) -name '*.so*' \
+            -exec cp -L '{}' dist/acestep-linux-x64/ \;
+          tar -C dist -czf acestep-linux-x64.tar.gz acestep-linux-x64
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-linux-x64
+          path: acestep-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64 (CPU + CUDA + Vulkan)
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          submodules: recursive
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.30
+        with:
+          cuda: 12.8.1
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          log-file-suffix: windows-2022.txt
 
       - name: Install Vulkan SDK
         uses: humbletim/install-vulkan-sdk@v1.2
@@ -62,202 +90,50 @@ jobs:
           version: 1.4.309.0
           cache: true
 
-      - name: Configure & Build
-        run: |
-          ./buildall.sh
+      - name: Build every Windows backend
+        shell: cmd
+        run: buildall.cmd
 
-      - name: Smoke test
-        continue-on-error: true
-        shell: bash
+      - name: Package
+        shell: pwsh
         run: |
-          BIN="build"
-          "$BIN/ace-lm"         2>&1 | head -5
-          "$BIN/ace-synth"      2>&1 | head -5
-          "$BIN/ace-understand" 2>&1 | head -5
-          "$BIN/neural-codec"   2>&1 | head -5
-          "$BIN/quantize"       2>&1 | head -3
-          "$BIN/mp3-codec"      2>&1 | head -3
+          $package = "dist/acestep-windows-x64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "build/Release/*.exe" $package
+          Copy-Item "build/Release/*.dll" $package
+          Compress-Archive -Path $package -DestinationPath "acestep-windows-x64.zip"
 
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "value=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "value=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
-          fi
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-windows-x64
+          path: acestep-windows-x64.zip
+          if-no-files-found: error
 
-      - name: Package binaries
-        run: |
-          mkdir -p dist
-          cp build/ace-* \
-             build/quantize build/neural-codec build/mp3-codec build/*.so dist/
-          tar -C dist -czf "acestep-linux-x64.tar.gz" .
-
-      - name: Upload to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ steps.tag.outputs.value }}" \
-            "acestep-linux-x64.tar.gz" \
-            --clobber
-
-  build-mac:
-    name: Build · macos-arm64-metal
-    runs-on: macos-latest
-    if: github.event_name != 'workflow_dispatch' || !inputs.skip_mac
+  publish:
+    name: Publish GitHub release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download packaged builds
+        uses: actions/download-artifact@v4
         with:
-          submodules: recursive
+          path: artifacts
+          merge-multiple: true
 
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          create-symlink: true
-          key: build-mac-macos-latest
-
-      - name: Configure & Build
-        run: |
-          mkdir build
-          cd build
-          cmake ..
-          cmake --build . --config Release -j "$(nproc)"
-
-      - name: Smoke test
-        continue-on-error: true
-        shell: bash
-        run: |
-          BIN="build"
-          "$BIN/ace-lm"         2>&1 | head -5
-          "$BIN/ace-synth"      2>&1 | head -5
-          "$BIN/ace-understand" 2>&1 | head -5
-          "$BIN/neural-codec"   2>&1 | head -5
-          "$BIN/quantize"       2>&1 | head -3
-          "$BIN/mp3-codec"      2>&1 | head -3
-
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "value=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "value=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Package binaries
-        run: |
-          mkdir -p dist
-          cd build
-          for bin in ace-* quantize neural-codec mp3-codec; do
-            install_name_tool -add_rpath @executable_path "$bin"
-          done
-          cp -P ace-* quantize neural-codec mp3-codec libacestep*.a libggml*.dylib ../dist/
-          cd ..
-          tar -C dist -czf "acestep-macos-arm64-metal.tar.gz" .
-
-      - name: Upload to release
+      - name: Create release and upload builds
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ steps.tag.outputs.value }}" \
-            "acestep-macos-arm64-metal.tar.gz" \
-            --clobber
-
-  build-windows:
-    name: Build · windows-x64
-    runs-on: windows-latest
-    if: github.event_name != 'workflow_dispatch' || !inputs.skip_windows
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Cache CUDA toolkit
-        id: cache-cuda
-        uses: actions/cache@v4
-        with:
-          path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA
-          key: cuda-12-windows-latest
-
-      - name: Install CUDA toolkit
-        if: steps.cache-cuda.outputs.cache-hit != 'true'
-        uses: Jimver/cuda-toolkit@v0.2.30
-        with:
-          log-file-suffix: 'windows-latest.txt'
-
-      - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: 1.4.309.0
-          cache: true
-
-      - name: Cache build directory
-        uses: actions/cache@v4
-        with:
-          path: build-msvc
-          key: build-msvc-${{ github.sha }}
-          restore-keys: |
-            build-msvc-
-
-      - name: Configure & Build
-        shell: pwsh
-        run: |
-          # Configure — only print errors
-          cmake -S . -B build-msvc `
-            -DGGML_CPU_ALL_VARIANTS=ON `
-            -DGGML_CUDA=ON `
-            -DGGML_VULKAN=ON `
-            -DGGML_BACKEND_DL=ON `
-            --log-level=ERROR 2>&1 | Where-Object { $_ -notmatch '^--' }
-
-          # Build — suppress per-file progress, only show warnings/errors
-          cmake --build build-msvc --config Release -j $env:NUMBER_OF_PROCESSORS `
-            -- /v:minimal /consoleloggerparameters:ErrorsOnly 2>&1 `
-            | Where-Object { $_ -match '(error|warning|FAILED|fatal)' -or $_ -eq '' } `
-            | Select-Object -Last 50
-
-      - name: Smoke test
-        continue-on-error: true
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
-          BIN="build-msvc/Release"
-          "$BIN/ace-lm.exe"         2>&1 | head -5
-          "$BIN/ace-synth.exe"      2>&1 | head -5
-          "$BIN/ace-understand.exe" 2>&1 | head -5
-          "$BIN/neural-codec.exe"   2>&1 | head -5
-          "$BIN/quantize.exe"       2>&1 | head -3
-          "$BIN/mp3-codec.exe"      2>&1 | head -3
-
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "value=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "value=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --generate-notes --title "$TAG"
           fi
-
-      - name: Package binaries
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path dist | Out-Null
-          Copy-Item "build-msvc\Release\*.exe" dist\ -ErrorAction SilentlyContinue
-          Copy-Item "build-msvc\Release\*.dll" dist\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist\* -DestinationPath "acestep-windows-x64.zip"
-
-      - name: Upload to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          gh release upload "${{ steps.tag.outputs.value }}" `
-            "acestep-windows-x64.zip" `
-            --clobber
+          gh release upload "$TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
