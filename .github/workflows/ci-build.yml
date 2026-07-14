@@ -41,7 +41,6 @@ jobs:
         with:
           cuda: 12.8.1
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
           log-file-suffix: ubuntu-22.04.txt
 
       - name: Build every Linux backend
@@ -94,7 +93,10 @@ jobs:
             "quantize", "neural-codec", "mp3-codec"
           )
           foreach ($name in $expected) {
-            if (-not (Test-Path "build/$name.exe")) {
-              throw "Missing build/$name.exe"
+            $binary = Get-ChildItem build -Recurse -File -Filter "$($name).exe" |
+              Select-Object -First 1
+            if (-not $binary) {
+              throw "Missing $($name).exe under build/"
             }
+            Write-Host "$($name).exe: $($binary.FullName)"
           }

@@ -45,7 +45,6 @@ jobs:
         with:
           cuda: 12.8.1
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
           log-file-suffix: ubuntu-22.04.txt
 
       - name: Build every Linux backend
@@ -105,8 +104,20 @@ jobs:
         run: |
           $package = "dist/acestep-windows-x64"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item "build/*.exe" $package
-          Copy-Item "build/*.dll" $package
+          $expected = @(
+            "ace-lm", "ace-synth", "ace-server", "ace-understand",
+            "quantize", "neural-codec", "mp3-codec"
+          )
+          foreach ($name in $expected) {
+            $binary = Get-ChildItem build -Recurse -File -Filter "$($name).exe" |
+              Select-Object -First 1
+            if (-not $binary) {
+              throw "Missing $($name).exe under build/"
+            }
+            Copy-Item $binary.FullName $package
+          }
+          Get-ChildItem build -Recurse -File -Filter "*.dll" |
+            Copy-Item -Destination $package -Force
           Compress-Archive -Path $package -DestinationPath "acestep-windows-x64.zip"
 
       - name: Upload packaged build
