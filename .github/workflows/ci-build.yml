@@ -36,6 +36,16 @@ jobs:
           version: 1.4.309.0
           cache: true
 
+      - name: Install SPIR-V headers
+        shell: bash
+        run: |
+          git clone --depth 1 --branch vulkan-sdk-1.4.309.0 \
+            https://github.com/KhronosGroup/SPIRV-Headers.git .deps/SPIRV-Headers
+          cmake -S .deps/SPIRV-Headers -B .deps/SPIRV-Headers-build \
+            -DCMAKE_INSTALL_PREFIX="$PWD/.deps/spirv-headers"
+          cmake --install .deps/SPIRV-Headers-build
+          echo "CMAKE_PREFIX_PATH=$PWD/.deps/spirv-headers" >> "$GITHUB_ENV"
+
       - name: Install CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
         with:
@@ -80,6 +90,18 @@ jobs:
         with:
           version: 1.4.309.0
           cache: true
+
+      - name: Install SPIR-V headers
+        shell: pwsh
+        run: |
+          $source = "$env:GITHUB_WORKSPACE/.deps/SPIRV-Headers"
+          $build = "$env:GITHUB_WORKSPACE/.deps/SPIRV-Headers-build"
+          $prefix = "$env:GITHUB_WORKSPACE/.deps/spirv-headers"
+          git clone --depth 1 --branch vulkan-sdk-1.4.309.0 `
+            https://github.com/KhronosGroup/SPIRV-Headers.git $source
+          cmake -S $source -B $build "-DCMAKE_INSTALL_PREFIX=$prefix"
+          cmake --install $build
+          "CMAKE_PREFIX_PATH=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build every Windows backend
         shell: cmd
