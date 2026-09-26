@@ -122,3 +122,61 @@ jobs:
             }
             Write-Host "$($name).exe: $($binary.FullName)"
           }
+
+  windows-arm64-cpu:
+    name: Windows ARM64 (CPU)
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build native ARM64 CPU binaries
+        shell: cmd
+        run: buildarm64.cmd
+
+      - name: Package and validate ARM64 binaries
+        shell: pwsh
+        run: |
+          $package = "dist/acestep-windows-arm64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          $expected = @(
+            "ace-lm", "ace-synth", "ace-server", "ace-understand",
+            "quantize", "neural-codec", "mp3-codec"
+          )
+
+          function Assert-Arm64Pe([string]$path) {
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0xAA64) {
+              throw "$path is not ARM64 PE (machine=0x$($machine.ToString('X4')))"
+            }
+          }
+
+          foreach ($name in $expected) {
+            $binary = Get-ChildItem build-arm64 -Recurse -File -Filter "$($name).exe" |
+              Select-Object -First 1
+            if (-not $binary) {
+              throw "Missing $($name).exe under build-arm64/"
+            }
+            Assert-Arm64Pe $binary.FullName
+            Copy-Item $binary.FullName $package
+          }
+
+          Get-ChildItem build-arm64 -Recurse -File -Filter "*.dll" | ForEach-Object {
+            Assert-Arm64Pe $_.FullName
+            Copy-Item $_.FullName $package -Force
+          }
+
+          Compress-Archive -Path $package -DestinationPath "acestep-windows-arm64.zip"
+
+      - name: Upload ARM64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-windows-arm64
+          path: acestep-windows-arm64.zip
+          if-no-files-found: error
