@@ -1,9 +1,10 @@
 @echo off
 setlocal
 
-rem Native Windows ARM64 CPU-only build. Keep accelerators disabled for the
-rem first bring-up so the package is easy to validate on Snapdragon X.
-cmake -S . -B build-arm64 -A ARM64 ^
+rem Native Windows ARM64 CPU-only build. GGML explicitly rejects MSVC for
+rem ARM, so use Visual Studio's ClangCL toolset while targeting ARM64.
+rem Keep accelerator backends disabled for the first bring-up.
+cmake -S . -B build-arm64 -A ARM64 -T ClangCL ^
   -DGGML_CUDA=OFF ^
   -DGGML_VULKAN=OFF ^
   -DGGML_SYCL=OFF ^
