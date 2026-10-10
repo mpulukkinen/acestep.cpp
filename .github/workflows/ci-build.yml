@@ -180,3 +180,29 @@ jobs:
           name: acestep-windows-arm64
           path: acestep-windows-arm64.zip
           if-no-files-found: error
+
+  windows-arm64-vulkan:
+    name: Windows ARM64 (Vulkan)
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ARM64 Vulkan SDK and SPIR-V headers
+        shell: pwsh
+        run: ./scripts/setup_windows_arm64_vulkan.ps1
+
+      - name: Build and validate native ARM64 Vulkan package
+        shell: pwsh
+        run: ./scripts/build_windows_arm64_vulkan.ps1 -Clean
+
+      - name: Upload ARM64 Vulkan package
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-windows-arm64-vulkan
+          path: acestep-windows-arm64-vulkan.zip
+          if-no-files-found: error
