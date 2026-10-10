@@ -12,6 +12,26 @@ foreach ($path in @($library, $includes, $glslc)) {
 }
 $build = Join-Path $repo "build-arm64-vulkan"
 if ($Clean -and (Test-Path $build)) { Remove-Item -LiteralPath $build -Recurse -Force }
+# The pinned ggml submodule uses ExternalProject_Add for the Vulkan shader
+# generator. In a VS ARM64 cross-build, its nested generator otherwise inherits
+# ARM64 and cannot run on this x64 CI host. Force ONLY the shader generator
+# helper project to build for x64; all ACE-Step/GGML targets remain ARM64.
+$shaderCmake = Join-Path $repo "ggml/src/ggml-vulkan/CMakeLists.txt"
+$shaderSource = [IO.File]::ReadAllText($shaderCmake)
+$shaderAnchor = '        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vulkan-shaders'
+$shaderReplacement = $shaderAnchor + "`n" +
+    '        CMAKE_GENERATOR "Visual Studio 17 2022"' + "`n" +
+    '        CMAKE_GENERATOR_PLATFORM x64'
+if ($shaderSource.Contains($shaderReplacement)) {
+    Write-Host "ggml Vulkan x64 host shader-generator configuration already applied"
+} elseif ($shaderSource.Contains($shaderAnchor)) {
+    $shaderSource = $shaderSource.Replace($shaderAnchor, $shaderReplacement)
+    [IO.File]::WriteAllText($shaderCmake, $shaderSource)
+    Write-Host "Configured Vulkan shader generator for x64 host (ARM64 inference unchanged)"
+} else {
+    throw "Pinned ggml Vulkan CMake has changed; cannot safely configure x64 host shader generator"
+}
+
 $configure = @(
     "-S", $repo, "-B", $build, "-G", "Visual Studio 17 2022", "-A", "ARM64", "-T", "ClangCL",
     "-DGGML_CUDA=OFF", "-DGGML_VULKAN=ON", "-DGGML_SYCL=OFF", "-DGGML_HIP=OFF",
