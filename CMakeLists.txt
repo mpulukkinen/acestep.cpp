@@ -61,6 +61,19 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     endif()
 endif()
 
+# The pinned ggml fork finds SPIRV-Headers on Windows ARM64 but does not
+# propagate its include directories to the Vulkan target. Supply the headers
+# from the CMake package at the parent level for the ARM64 Vulkan cross-build.
+if(WIN32 AND GGML_VULKAN AND CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+    find_package(SPIRV-Headers CONFIG REQUIRED)
+    if(TARGET SPIRV-Headers::SPIRV-Headers)
+        get_target_property(_spirv_header_dirs SPIRV-Headers::SPIRV-Headers INTERFACE_INCLUDE_DIRECTORIES)
+        if(_spirv_header_dirs)
+            include_directories(${_spirv_header_dirs})
+        endif()
+    endif()
+endif()
+
 # ggml as subdirectory, inherits GGML_CUDA, GGML_METAL, etc. from cmake flags
 # CUDA graphs default on: standalone ggml ships them off. Overridable with
 # -DGGML_CUDA_GRAPHS=OFF or at runtime with GGML_CUDA_DISABLE_GRAPHS=1.
