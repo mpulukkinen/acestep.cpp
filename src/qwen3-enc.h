@@ -73,6 +73,7 @@ struct Qwen3GGML {
     ggml_backend_sched_t sched;
     bool                 use_flash_attn;
     WeightCtx            wctx;
+    WeightCtx            embed_wctx; // CPU fallback for oversized Vulkan embedding table
 };
 
 // Helpers (pure graph ops, no side effects)
@@ -346,8 +347,25 @@ static bool qwen3_load_text_encoder(Qwen3GGML * m, const char * gguf_path) {
     int n_tensors = 1 + m->cfg.n_layers * 11 + 1;
     wctx_init(&m->wctx, n_tensors);
 
-    m->embed_tokens = gf_load_tensor(&m->wctx, gf, "embed_tokens.weight");
-    m->final_norm   = gf_load_tensor_f32(&m->wctx, gf, "norm.weight");
+    // Some Vulkan devices (including Qualcomm Adreno) reject binding the
+    // large vocabulary tensor as one storage buffer, even though allocating
+    // that GPU buffer succeeds. GGML then aborts when scheduling the NONE
+    // weight leaf. This must be checked BEFORE backend allocation, using the
+    // original GGUF metadata tensor just like the standalone Qwen3 LM.
+    const char * embed_name = "embed_tokens.weight";
+    struct ggml_tensor * embed_meta = ggml_get_tensor(gf.meta, embed_name);
+    bool embed_on_cpu = m->backend != m->cpu_backend && embed_meta &&
+                        !ggml_backend_supports_op(m->backend, embed_meta);
+    if (embed_on_cpu) {
+        fprintf(stderr, "[TextEncoder] GPU cannot bind embedding weight (%.1f MB); "
+                        "placing only the embedding table on CPU\n",
+                (double) ggml_nbytes(embed_meta) / (1024.0 * 1024.0));
+        wctx_init(&m->embed_wctx, 1);
+        m->embed_tokens = gf_load_tensor(&m->embed_wctx, gf, embed_name);
+    } else {
+        m->embed_tokens = gf_load_tensor(&m->wctx, gf, embed_name);
+    }
+    m->final_norm = gf_load_tensor_f32(&m->wctx, gf, "norm.weight");
 
     fprintf(stderr, "[Load] TextEncoder: %dL, H=%d, Nh=%d/%d\n", m->cfg.n_layers, m->cfg.hidden_size, m->cfg.n_heads,
             m->cfg.n_kv_heads);
@@ -357,11 +375,15 @@ static bool qwen3_load_text_encoder(Qwen3GGML * m, const char * gguf_path) {
         qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix, i);
     }
 
-    if (!wctx_alloc(&m->wctx, m->backend)) {
-        gf_close(&gf);
-        return false;
+    bool weights_loaded = wctx_alloc(&m->wctx, m->backend);
+    if (weights_loaded && embed_on_cpu) {
+        weights_loaded = wctx_alloc(&m->embed_wctx, m->cpu_backend);
     }
     gf_close(&gf);
+    if (!weights_loaded) {
+        fprintf(stderr, "[TextEncoder] FATAL: failed to allocate weights\n");
+        return false;
+    }
 
     return true;
 }
@@ -484,7 +506,8 @@ static void qwen3_free(Qwen3GGML * m) {
     if (m->sched) {
         ggml_backend_sched_free(m->sched);
     }
-    backend_release(m->backend, m->cpu_backend);
+    wctx_free(&m->embed_wctx);
     wctx_free(&m->wctx);
+    backend_release(m->backend, m->cpu_backend);
     *m = {};
 }
