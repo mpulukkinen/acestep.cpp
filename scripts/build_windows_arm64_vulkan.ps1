@@ -57,8 +57,8 @@ Get-ChildItem -LiteralPath $build -Recurse -File -Filter "*.dll" | ForEach-Objec
 $importsVulkan = Get-ChildItem -LiteralPath $package -File |
     Where-Object { $_.Extension -in @(".dll", ".exe") } |
     Where-Object {
-        [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($_.FullName)).
-            Contains("vulkan-1.dll", [StringComparison]::OrdinalIgnoreCase)
+        $image = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($_.FullName))
+        $image.IndexOf("vulkan-1.dll", [StringComparison]::OrdinalIgnoreCase) -ge 0
     } | Select-Object -First 1
 if (-not $importsVulkan) {
     throw "No packaged native ARM64 binary imports vulkan-1.dll; refusing CPU-only release"
