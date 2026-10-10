@@ -100,6 +100,27 @@ static BackendPair backend_init(const char * label) {
         return g_backend_cache;
     }
 
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(_M_ARM64EC))
+    // Qualcomm's Windows ARM64 Adreno Vulkan driver can advertise the shader
+    // integer-dot extension but reject the resulting Q8_0 x Q8_1 compute
+    // pipeline with VK_ERROR_UNKNOWN (FSQ detokenizer and potentially DiT).
+    // Set this BEFORE ggml_backend_load_all(), since device capabilities and
+    // shader pipelines are initialized while registering Vulkan devices.
+    // Vulkan remains enabled: GGML uses its non-integer-dot matvec kernels.
+    // An explicit opt-in allows future drivers to be retested without a build.
+    const char * requested_backend = std::getenv("GGML_BACKEND");
+    if (requested_backend && strcmp(requested_backend, "Vulkan0") == 0 &&
+        !std::getenv("ACE_STEP_VK_ENABLE_INTEGER_DOT_PRODUCT") &&
+        !std::getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
+        if (_putenv_s("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1") != 0) {
+            fprintf(stderr, "[Load] WARNING: could not disable Vulkan integer-dot pipelines\n");
+        } else {
+            fprintf(stderr,
+                    "[Load] ARM64 Vulkan: disabled integer-dot pipelines to avoid Qualcomm Q8_0/Q8_1 shader creation failure\n");
+        }
+    }
+#endif
+
     ggml_backend_load_all();
     BackendPair bp = {};
 
