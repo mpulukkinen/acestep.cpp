@@ -208,9 +208,37 @@ jobs:
           path: acestep-windows-arm64.zip
           if-no-files-found: error
 
+
+  windows-arm64-vulkan:
+    name: Windows ARM64 (Vulkan)
+    runs-on: windows-2022
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          submodules: recursive
+
+      - name: Install ARM64 Vulkan SDK and SPIR-V headers
+        shell: pwsh
+        run: ./scripts/setup_windows_arm64_vulkan.ps1
+
+      - name: Build and validate native ARM64 Vulkan package
+        shell: pwsh
+        run: ./scripts/build_windows_arm64_vulkan.ps1 -Clean
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-windows-arm64-vulkan
+          path: acestep-windows-arm64-vulkan.zip
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub release
-    needs: [linux, windows, windows-arm64]
+    needs: [linux, windows, windows-arm64, windows-arm64-vulkan]
     runs-on: ubuntu-latest
     permissions:
       contents: write
