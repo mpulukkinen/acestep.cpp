@@ -61,7 +61,7 @@ struct Qwen3LM {
     Qwen3LMConfig cfg;
 
     // Weights (on backend)
-    struct ggml_tensor * embed_tokens;  // [H, V] on GPU (used by mul_mat lm_head)
+    struct ggml_tensor * embed_tokens;  // [H, V], GPU or CPU if Vulkan cannot bind this tensor
     struct ggml_tensor * final_norm;    // [H]
     // lm_head = embed_tokens when tie_embeddings
     Qwen3Layer           layers[QW3LM_MAX_LAYERS];
@@ -73,6 +73,7 @@ struct Qwen3LM {
     ggml_backend_buffer_t lm_head_buf;
 
     WeightCtx            wctx;
+    WeightCtx            embed_wctx;  // CPU-only oversized embedding fallback (otherwise empty)
     ggml_backend_t       backend;
     ggml_backend_t       cpu_backend;
     ggml_backend_sched_t sched;
@@ -307,8 +308,25 @@ static bool qw3lm_load(Qwen3LM * m, const char * gguf_path, int max_seq_len, int
     int n_tensors = 2 + c.n_layers * 11;
     wctx_init(&m->wctx, n_tensors);
 
-    m->embed_tokens = gf_load_tensor(&m->wctx, gf, "model.embed_tokens.weight");
-    m->final_norm   = gf_load_tensor_f32(&m->wctx, gf, "model.norm.weight");
+    // Vulkan devices (notably Adreno) may allow allocating a multi-GB buffer
+    // but restrict the size of an individual storage-buffer binding. GGML's
+    // scheduler then aborts on the preallocated GGML_OP_NONE weight leaf,
+    // before GET_ROWS or the tied LM-head matmul can fall back to CPU.
+    // Ask the backend whether this exact tensor is usable *before* placing it.
+    const char * embed_name = "model.embed_tokens.weight";
+    struct ggml_tensor * embed_meta = ggml_get_tensor(gf.meta, embed_name);
+    bool embed_on_cpu = m->backend != m->cpu_backend && embed_meta &&
+                        !ggml_backend_supports_op(m->backend, embed_meta);
+    if (embed_on_cpu) {
+        fprintf(stderr,
+                "[LM-Load] Vulkan/GPU cannot bind embedding weight (%.1f MB); placing tied embedding/LM head on CPU, transformer stays on GPU\n",
+                (double) ggml_nbytes(embed_meta) / (1024.0 * 1024.0));
+        wctx_init(&m->embed_wctx, 1);
+        m->embed_tokens = gf_load_tensor(&m->embed_wctx, gf, embed_name);
+    } else {
+        m->embed_tokens = gf_load_tensor(&m->wctx, gf, embed_name);
+    }
+    m->final_norm = gf_load_tensor_f32(&m->wctx, gf, "model.norm.weight");
 
     for (int i = 0; i < c.n_layers; i++) {
         char prefix[64];
@@ -316,8 +334,15 @@ static bool qw3lm_load(Qwen3LM * m, const char * gguf_path, int max_seq_len, int
         qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix, i);
     }
 
-    wctx_alloc(&m->wctx, m->backend);
+    bool weights_loaded = wctx_alloc(&m->wctx, m->backend);
+    if (weights_loaded && embed_on_cpu) {
+        weights_loaded = wctx_alloc(&m->embed_wctx, m->cpu_backend);
+    }
     gf_close(&gf);
+    if (!weights_loaded) {
+        fprintf(stderr, "[LM-Load] FATAL: failed to allocate LM weights\n");
+        return false;
+    }
 
     // KV cache
     qw3lm_alloc_kv_cache(m, n_kv_sets > 0 ? n_kv_sets : 1);
@@ -348,7 +373,15 @@ static bool qw3lm_build_partial_head(Qwen3LM * m, int lm_offset) {
     m->lm_head_phase2                  = ggml_new_tensor_2d(m->lm_head_ctx, m->embed_tokens->type, H, lm_count);
     ggml_set_name(m->lm_head_phase2, "lm_head_phase2");
 
-    m->lm_head_buf = ggml_backend_alloc_ctx_tensors(m->lm_head_ctx, m->backend);
+    // The smaller phase-2 LM head can still exceed some Vulkan storage-range
+    // limits. Check separately; both CPU and GPU buffers are scheduler-visible.
+    ggml_backend_t head_backend = m->backend;
+    if (m->backend != m->cpu_backend && !ggml_backend_supports_op(m->backend, m->lm_head_phase2)) {
+        head_backend = m->cpu_backend;
+        fprintf(stderr, "[LM] Phase-2 head (%.1f MB) exceeds GPU tensor limits; using CPU head\n",
+                (double) ggml_nbytes(m->lm_head_phase2) / (1024.0 * 1024.0));
+    }
+    m->lm_head_buf = ggml_backend_alloc_ctx_tensors(m->lm_head_ctx, head_backend);
     if (!m->lm_head_buf) {
         fprintf(stderr, "[LM] WARNING: failed to allocate partial head buffer, using full vocab\n");
         ggml_free(m->lm_head_ctx);
@@ -914,7 +947,8 @@ static void qw3lm_free(Qwen3LM * m) {
     if (m->kv_ctx) {
         ggml_free(m->kv_ctx);
     }
-    backend_release(m->backend, m->cpu_backend);
+    wctx_free(&m->embed_wctx);
     wctx_free(&m->wctx);
+    backend_release(m->backend, m->cpu_backend);
     *m = {};
 }
