@@ -1,0 +1,43 @@
+# Temporary fast feedback workflow for Windows ARM64 Vulkan experiments.
+# Unlike the full build/release pipelines, this runs only the ARM64 Vulkan job.
+# The artifact contains the unzipped executables and DLLs for direct copying
+# into the installed ACE-Step bin directory. Delete when device tests settle.
+name: ARM64 Vulkan quick binaries
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-vulkan:
+    name: Compile and upload native ARM64 Vulkan binaries
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out exact PR commit and dependencies
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ARM64 Vulkan SDK and SPIR-V headers
+        shell: pwsh
+        run: ./scripts/setup_windows_arm64_vulkan.ps1
+
+      - name: Build and validate native ARM64 Vulkan binaries
+        shell: pwsh
+        run: ./scripts/build_windows_arm64_vulkan.ps1 -Clean
+
+      # Upload the binaries themselves, not a ZIP nested inside another ZIP.
+      # Download the workflow artifact ZIP and extract directly into LVS's
+      # existing ACE-Step Windows ARM64 Vulkan installation directory.
+      - name: Upload ready-to-copy native binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: acestep-arm64-vulkan-ready-to-copy
+          path: dist/acestep-windows-arm64-vulkan/
+          if-no-files-found: error
+          retention-days: 7
