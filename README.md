@@ -45,7 +45,24 @@ To build from source, install
 buildcuda.cmd     # NVIDIA GPU
 buildvulkan.cmd   # AMD/Intel GPU (Vulkan)
 buildall.cmd      # all backends (CUDA + Vulkan + CPU, runtime loading)
+buildarm64.cmd    # native Windows ARM64 CPU
+# For native Windows ARM64 Vulkan, see below.
 ```
+
+### Windows ARM64 Vulkan (experimental)
+
+Run `scripts/build_windows_arm64_vulkan.ps1` from PowerShell with the
+Vulkan SDK installed (including ARM64 import libraries), its `VULKAN_SDK`
+environment variable set, and SPIRV-Headers discoverable by CMake.
+CI installs these dependencies with `scripts/setup_windows_arm64_vulkan.ps1`
+and produces `acestep-windows-arm64-vulkan.zip`.
+
+The archive is native ARM64, separate from `acestep-windows-arm64.zip` (CPU).
+It is compiled with GGML Vulkan enabled and requires a working Vulkan
+driver, such as the Snapdragon Adreno Windows Vulkan ICD.
+**Cross-compilation and Vulkan linkage do not prove music generation works
+on the actual device**; test a full LM + DiT + VAE request before making
+Vulkan the default.
 
 ### Linux / macOS
 
