@@ -76,6 +76,7 @@ struct Qwen3LM {
     WeightCtx            embed_wctx;  // CPU-only oversized embedding fallback (otherwise empty)
     ggml_backend_t       backend;
     ggml_backend_t       cpu_backend;
+    ggml_backend_t       owner_backend;  // original shared backend, even when this LM executes on CPU
     ggml_backend_sched_t sched;
     bool                 use_flash_attn;
     bool                 clamp_fp16;  // clamp hidden state on sub-Ampere CUDA (FP16 accumulation overflow)
@@ -200,11 +201,22 @@ static Qwen3LMConfig qw3lm_load_config(const GGUFModel & gf) {
 
 // Init backend (same pattern as qwen3.h)
 static void qw3lm_init_backend(Qwen3LM * m) {
-    BackendPair bp    = backend_init("LM");
-    m->backend        = bp.backend;
-    m->cpu_backend    = bp.cpu_backend;
-    m->sched          = backend_sched_new(bp, 8192);
-    m->use_flash_attn = bp.has_gpu;
+    BackendPair bp = backend_init("LM");
+    m->owner_backend = bp.backend;
+    m->cpu_backend   = bp.cpu_backend;
+    BackendPair execution_bp = bp;
+    // On this driver the same 4B Q8 LM prompt produces 89 audio codes on CPU
+    // but one code on Vulkan; first-token logits have cosine similarity -0.25.
+    // Keep the shared Vulkan backend alive for the later synth modules.
+    if (bp.has_gpu && backend_is_qualcomm_arm64_vulkan(bp.backend) &&
+        !std::getenv("ACE_STEP_VK_FORCE_GPU_LM")) {
+        execution_bp.backend = bp.cpu_backend;
+        execution_bp.has_gpu = false;
+        fprintf(stderr, "[LM] Qualcomm ARM64 Vulkan logits differ from CPU; running LM on CPU\n");
+    }
+    m->backend        = execution_bp.backend;
+    m->sched          = backend_sched_new(execution_bp, 8192);
+    m->use_flash_attn = execution_bp.has_gpu;
     m->clamp_fp16     = false;
 }
 
@@ -949,6 +961,6 @@ static void qw3lm_free(Qwen3LM * m) {
     }
     wctx_free(&m->embed_wctx);
     wctx_free(&m->wctx);
-    backend_release(m->backend, m->cpu_backend);
+    backend_release(m->owner_backend, m->cpu_backend);
     *m = {};
 }

@@ -13,6 +13,7 @@
 #include "ggml.h"
 #include "gguf-weights.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -473,6 +474,15 @@ static int vae_ggml_decode_tiled(VAEGGML *     m,
                                  int           overlap    = 64,
                                  bool (*cancel)(void *)   = nullptr,
                                  void * cancel_data       = nullptr) {
+    // The Adreno X1-85 driver exits during a single 500-frame VAE graph.
+    // A 64-frame tile with 16-frame overlap completes on the same device.
+    if (backend_is_qualcomm_arm64_vulkan(m->backend) &&
+        !std::getenv("ACE_STEP_VK_FORCE_LARGE_VAE_TILES") && chunk_size > 64) {
+        chunk_size = 64;
+        overlap = std::min(overlap, 16);
+        fprintf(stderr, "[VAE] Qualcomm ARM64 Vulkan: limiting decode tiles to %d frames, overlap %d\n",
+                chunk_size, overlap);
+    }
     // Ensure positive stride (matches Python effective_overlap reduction)
     while (chunk_size - 2 * overlap <= 0 && overlap > 0) {
         overlap /= 2;
