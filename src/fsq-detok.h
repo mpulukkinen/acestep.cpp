@@ -69,10 +69,27 @@ struct DetokGGML {
 static bool detok_ggml_load(DetokGGML * m, const char * gguf_path) {
     m->cfg = detok_config();
 
-    BackendPair bp    = backend_init("Detokenizer");
-    m->backend        = bp.backend;
-    m->cpu_backend    = bp.cpu_backend;
-    m->use_flash_attn = bp.has_gpu;
+    BackendPair bp = backend_init("Detokenizer");
+    // Keep the original backend pair for lifetime management even if this
+    // particular small model needs to execute entirely on the CPU.
+    m->backend     = bp.backend;
+    m->cpu_backend = bp.cpu_backend;
+
+    BackendPair execution_bp = bp;
+    // Adreno X1-85's Vulkan driver refuses to create both Q8_0/Q8_1 and
+    // Q8_0/F32 matvec pipelines for this model (VK_ERROR_UNKNOWN). Disabling
+    // the integer-dot optimization globally only selects the other failing
+    // shader. Restrict this fallback to FSQ detokenization: 2 transformer
+    // layers and ~106 MB of weights.
+    // ACE_STEP_VK_FORCE_GPU_DETOK=1 is for retesting newer Qualcomm drivers.
+    if (bp.has_gpu && backend_is_qualcomm_arm64_vulkan(bp.backend) &&
+        !std::getenv("ACE_STEP_VK_FORCE_GPU_DETOK")) {
+        execution_bp.backend = bp.cpu_backend;
+        execution_bp.has_gpu = false;
+        fprintf(stderr, "[Detokenizer] Qualcomm ARM64 Vulkan Q8 matvec shaders fail; "
+                        "running FSQ detokenizer on CPU\n");
+    }
+    m->use_flash_attn = execution_bp.has_gpu;
 
     GGUFModel gf;
     if (!gf_load(&gf, gguf_path)) {
@@ -101,14 +118,14 @@ static bool detok_ggml_load(DetokGGML * m, const char * gguf_path) {
         qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix);
     }
 
-    if (!wctx_alloc(&m->wctx, m->backend)) {
+    if (!wctx_alloc(&m->wctx, execution_bp.backend)) {
         gf_close(&gf);
         return false;
     }
     gf_close(&gf);
 
     // Scheduler
-    m->sched = backend_sched_new(bp, 4096);
+    m->sched = backend_sched_new(execution_bp, 4096);
     if (!m->sched) {
         fprintf(stderr, "[FSQ] FATAL: failed to create scheduler\n");
         return false;

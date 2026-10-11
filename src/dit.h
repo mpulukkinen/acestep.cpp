@@ -114,6 +114,7 @@ struct DiTGGML {
     // Backend
     ggml_backend_t       backend;
     ggml_backend_t       cpu_backend;
+    ggml_backend_t       owner_backend;
     ggml_backend_sched_t sched;
     bool                 use_flash_attn;
 
@@ -260,10 +261,18 @@ static bool dit_ggml_load(DiTGGML *    m,
     // Backend init. flash_attn_ext accumulates in F16 on CPU, causing audible
     // drift over 24 layers x 8 steps: use F32 manual attention on CPU instead.
     BackendPair bp    = backend_init("DiT");
-    m->backend        = bp.backend;
+    m->owner_backend = bp.backend;
     m->cpu_backend    = bp.cpu_backend;
-    m->sched          = backend_sched_new(bp, 8192);
-    m->use_flash_attn = bp.has_gpu;
+    BackendPair execution_bp = bp;
+    if (bp.has_gpu && backend_is_qualcomm_arm64_vulkan(bp.backend) &&
+        !std::getenv("ACE_STEP_VK_FORCE_GPU_SYNTH")) {
+        execution_bp.backend = bp.cpu_backend;
+        execution_bp.has_gpu = false;
+        fprintf(stderr, "[DiT] Qualcomm ARM64 Vulkan Q8 output differs from CPU; running on CPU\n");
+    }
+    m->backend        = execution_bp.backend;
+    m->sched          = backend_sched_new(execution_bp, 8192);
+    m->use_flash_attn = execution_bp.has_gpu;
 
     GGUFModel gf;
     if (!gf_load(&gf, gguf_path)) {
@@ -445,7 +454,7 @@ static void dit_ggml_free(DiTGGML * m) {
     if (m->sched) {
         ggml_backend_sched_free(m->sched);
     }
-    backend_release(m->backend, m->cpu_backend);
+    backend_release(m->owner_backend, m->cpu_backend);
     wctx_free(&m->wctx);
     *m = {};
 }

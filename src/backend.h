@@ -18,6 +18,20 @@ struct BackendPair {
     bool           has_gpu;
 };
 
+static bool backend_is_qualcomm_arm64_vulkan(ggml_backend_t backend) {
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(_M_ARM64EC))
+    if (!backend || strncmp(ggml_backend_name(backend), "Vulkan", 6) != 0) {
+        return false;
+    }
+    ggml_backend_dev_t device = ggml_backend_get_device(backend);
+    const char * description = device ? ggml_backend_dev_description(device) : nullptr;
+    return description && (strstr(description, "Adreno") || strstr(description, "Qualcomm"));
+#else
+    (void) backend;
+    return false;
+#endif
+}
+
 // Cached backend state (shared across all modules in the same binary)
 static BackendPair g_backend_cache = {};
 static int         g_backend_refs  = 0;
