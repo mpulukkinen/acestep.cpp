@@ -70,6 +70,7 @@ struct Qwen3GGML {
     // Backend
     ggml_backend_t       backend;
     ggml_backend_t       cpu_backend;
+    ggml_backend_t       owner_backend;
     ggml_backend_sched_t sched;
     bool                 use_flash_attn;
     WeightCtx            wctx;
@@ -320,10 +321,18 @@ static void qwen3_load_layer(WeightCtx *         wctx,
 static bool qwen3_load_text_encoder(Qwen3GGML * m, const char * gguf_path) {
     // Backend init
     BackendPair bp    = backend_init("TextEncoder");
-    m->backend        = bp.backend;
+    m->owner_backend = bp.backend;
     m->cpu_backend    = bp.cpu_backend;
-    m->sched          = backend_sched_new(bp, 4096);
-    m->use_flash_attn = bp.has_gpu;
+    BackendPair execution_bp = bp;
+    if (bp.has_gpu && backend_is_qualcomm_arm64_vulkan(bp.backend) &&
+        !std::getenv("ACE_STEP_VK_FORCE_GPU_SYNTH")) {
+        execution_bp.backend = bp.cpu_backend;
+        execution_bp.has_gpu = false;
+        fprintf(stderr, "[TextEncoder] Qualcomm ARM64 Vulkan output differs from CPU; running on CPU\n");
+    }
+    m->backend        = execution_bp.backend;
+    m->sched          = backend_sched_new(execution_bp, 4096);
+    m->use_flash_attn = execution_bp.has_gpu;
 
     m->cfg = {
         /*hidden_size*/ 1024,
@@ -508,6 +517,6 @@ static void qwen3_free(Qwen3GGML * m) {
     }
     wctx_free(&m->embed_wctx);
     wctx_free(&m->wctx);
-    backend_release(m->backend, m->cpu_backend);
+    backend_release(m->owner_backend, m->cpu_backend);
     *m = {};
 }
